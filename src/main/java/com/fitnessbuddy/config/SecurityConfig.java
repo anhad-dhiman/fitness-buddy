@@ -27,7 +27,10 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
                                 "/auth/register",
-                                "/auth/login"
+                                "/auth/login",
+                                // Spring Boot forwards unhandled errors to /error. If it
+                                // requires authentication, every error is masked as 403.
+                                "/error"
                         ).permitAll()
                         .anyRequest().authenticated()
                 )

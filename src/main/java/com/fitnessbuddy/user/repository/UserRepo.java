@@ -1,23 +1,29 @@
 package com.fitnessbuddy.user.repository;
 
 import com.fitnessbuddy.user.entity.UserEntity;
-import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.CrudRepository;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.Optional;
 
+/**
+ * The lookups compare lower(column) = lower(:value) on purpose. The unique
+ * indexes in V2 are on lower(email) / lower(user_name), and PostgreSQL only
+ * uses an expression index when the query uses the same expression. A plain
+ * "WHERE email = ?" would scan the whole table. (Spring Data's derived
+ * "...IgnoreCase" methods generate upper(...), which would also miss the index.)
+ */
 @Repository
-public interface UserRepo extends CrudRepository<UserEntity,Integer> {
-    Optional<UserEntity> findByEmail(String email);
+public interface UserRepo extends JpaRepository<UserEntity, Integer> {
 
-    @Transactional
-    @Modifying
-    @Query("UPDATE UserEntity u SET u.accessedAt = :accessedAt WHERE u.id = :id")
-    void updateAccessedAt(@Param("accessedAt") Instant accessedAt, @Param("id") Integer id);
+    @Query("SELECT u FROM UserEntity u WHERE lower(u.email) = lower(:email)")
+    Optional<UserEntity> findByEmailIgnoreCase(@Param("email") String email);
 
+    @Query("SELECT count(u) > 0 FROM UserEntity u WHERE lower(u.email) = lower(:email)")
+    boolean existsByEmailIgnoreCase(@Param("email") String email);
+
+    @Query("SELECT count(u) > 0 FROM UserEntity u WHERE lower(u.userName) = lower(:userName)")
+    boolean existsByUserNameIgnoreCase(@Param("userName") String userName);
 }

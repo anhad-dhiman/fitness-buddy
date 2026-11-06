@@ -1,31 +1,29 @@
 package com.fitnessbuddy.auth.service;
 
-import com.fitnessbuddy.user.dto.UserResponseDto;
 import com.fitnessbuddy.auth.dto.LoginRequest;
 import com.fitnessbuddy.auth.dto.RegisterRequest;
-import com.fitnessbuddy.user.entity.UserEntity;
+import com.fitnessbuddy.common.exception.ConflictException;
+import com.fitnessbuddy.common.exception.UnauthorizedException;
 import com.fitnessbuddy.common.mapper.Mapper;
-import com.fitnessbuddy.user.repository.UserRepo;
 import com.fitnessbuddy.security.JwtService;
-import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseCookie;
-import org.springframework.http.ResponseEntity;
+import com.fitnessbuddy.user.dto.UserResponseDto;
+import com.fitnessbuddy.user.entity.UserEntity;
+import com.fitnessbuddy.user.repository.UserRepo;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
+import java.util.Locale;
 
 @Service
 public class AuthServiceImpl implements AuthService {
 
-    UserRepo userRepo;
-    PasswordEncoder passwordEncoder;
+    private final UserRepo userRepo;
+    private final PasswordEncoder passwordEncoder;
     private final Mapper<UserEntity, UserResponseDto> userMapper;
-    JwtService jwtService;
+    private final JwtService jwtService;
 
     AuthServiceImpl(UserRepo userRepo, PasswordEncoder passwordEncoder,
                     Mapper<UserEntity, UserResponseDto> userMapper, JwtService jwtService) {
@@ -35,62 +33,60 @@ public class AuthServiceImpl implements AuthService {
         this.jwtService = jwtService;
     }
 
-
     @Override
+    @Transactional
     public UserResponseDto registerUser(RegisterRequest registerRequest) {
+        String email = normalizeEmail(registerRequest.getEmail());
+        String userName = registerRequest.getUserName();
+
+        // Fast path: precise error messages for the common case.
+        if (userRepo.existsByEmailIgnoreCase(email)) {
+            throw new ConflictException("An account with this email already exists");
+        }
+        if (userRepo.existsByUserNameIgnoreCase(userName)) {
+            throw new ConflictException("This username is already taken");
+        }
+
         UserEntity userEntity = new UserEntity();
-
-        userEntity.setUserName(registerRequest.getUserName());
-        userEntity.setEmail(registerRequest.getEmail());
-
-        String hashedPass =  passwordEncoder.encode(registerRequest.getPassword());
-        userEntity.setPassword(hashedPass);
-
+        userEntity.setUserName(userName);
+        userEntity.setEmail(email);
+        userEntity.setPassword(passwordEncoder.encode(registerRequest.getPassword()));
         userEntity.setRole("USER");
-
         userEntity.setCreatedAt(Instant.now());
         userEntity.setAccessedAt(Instant.now());
 
-        userRepo.save(userEntity);
+        // The checks above are "check-then-act": two simultaneous requests can
+        // both pass them before either inserts. The unique indexes in the
+        // database are what really guarantee one account per email/username.
+        // saveAndFlush forces the INSERT now (instead of at commit), so a
+        // violation surfaces here, where we can turn it into a clean 409.
+        try {
+            userRepo.saveAndFlush(userEntity);
+        } catch (DataIntegrityViolationException e) {
+            throw new ConflictException("Email or username is already in use");
+        }
 
         return userMapper.mapToDto(userEntity);
     }
 
     @Override
-    public ResponseEntity<UserResponseDto> loginUser(LoginRequest loginRequest,
-                                                     HttpServletResponse response) {
-        String email = loginRequest.getEmail();
-        String rawPassword = loginRequest.getPassword();
+    @Transactional
+    public LoginResult loginUser(LoginRequest loginRequest) {
+        // Same error for "no such email" and "wrong password", so the
+        // response does not reveal which emails are registered.
+        UserEntity user = userRepo.findByEmailIgnoreCase(normalizeEmail(loginRequest.getEmail()))
+                .filter(u -> passwordEncoder.matches(loginRequest.getPassword(), u.getPassword()))
+                .orElseThrow(() -> new UnauthorizedException("Invalid email or password"));
 
-        Optional<UserEntity> userEntity = userRepo.findByEmail(email);
+        // No explicit UPDATE needed: inside @Transactional the entity is
+        // "managed", and Hibernate's dirty checking writes the change on commit.
+        user.setAccessedAt(Instant.now());
 
-        if(userEntity.isPresent()){
-            UserEntity user = userEntity.get();
-            String hashedPassword = user.getPassword();
+        String token = jwtService.generateJwtToken(user);
+        return new LoginResult(token, userMapper.mapToDto(user));
+    }
 
-            if(passwordEncoder.matches(rawPassword, hashedPassword)){
-                user.setAccessedAt(Instant.now());
-                userRepo.updateAccessedAt(user.getAccessedAt(), user.getId());
-
-                String token = jwtService.generateJwtToken(user);
-                ResponseCookie cookie = ResponseCookie
-                        .from("accessToken", token)
-                        .httpOnly(true)
-                        .secure(false)
-                        .sameSite("Lax")
-                        .path("/")
-                        .maxAge(Duration.ofMinutes(15))
-                        .build();
-
-                response.addHeader(
-                        HttpHeaders.SET_COOKIE,
-                        cookie.toString()
-                );
-
-                return ResponseEntity.ok(userMapper.mapToDto(user));
-            }
-        }
-
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+    private static String normalizeEmail(String email) {
+        return email.trim().toLowerCase(Locale.ROOT);
     }
 }
