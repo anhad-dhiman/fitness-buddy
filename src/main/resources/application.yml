@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: fitness-buddy
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/fitness_buddy
+    username: postgres
+    password: 1234
