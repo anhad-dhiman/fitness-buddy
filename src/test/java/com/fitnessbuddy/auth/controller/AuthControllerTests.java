@@ -4,6 +4,7 @@ import com.fitnessbuddy.auth.service.AuthService;
 import com.fitnessbuddy.auth.service.LoginResult;
 import com.fitnessbuddy.common.exception.ConflictException;
 import com.fitnessbuddy.common.exception.UnauthorizedException;
+import com.fitnessbuddy.config.CorsConfig;
 import com.fitnessbuddy.config.SecurityConfig;
 import com.fitnessbuddy.security.AccessTokenCookieFactory;
 import com.fitnessbuddy.security.JwtService;
@@ -19,17 +20,24 @@ import org.springframework.test.web.servlet.MockMvc;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /**
  * Web-layer slice test: starts only MVC infrastructure (controllers, JSON,
- * validation, the @RestControllerAdvice, and the security filter chain we
+ * validation, the @RestControllerAdvice, and the security configuration we
  * import) with the service mocked. It checks the HTTP contract: status codes,
- * response bodies, validation messages, and cookies.
+ * response bodies, validation messages, cookies, and CSRF.
+ *
+ * {@code .with(csrf())} adds a valid CSRF token to a request, standing in for
+ * what the React app does with the XSRF-TOKEN cookie. Side effect to know:
+ * it swaps a test repository into the shared CsrfFilter for all later requests
+ * in the class, so the real "GET /auth/csrf sets the cookie" behaviour is
+ * tested in AuthFlowIntegrationTests instead, which never uses csrf().
  */
 @WebMvcTest(AuthController.class)
-@Import({SecurityConfig.class, AccessTokenCookieFactory.class})
+@Import({SecurityConfig.class, CorsConfig.class, AccessTokenCookieFactory.class})
 class AuthControllerTests {
 
     @Autowired MockMvc mockMvc;
@@ -37,13 +45,24 @@ class AuthControllerTests {
     @MockitoBean AuthService authService;
     @MockitoBean JwtService jwtService; // needed by JwtAuthenticationFilter
 
+    private static final String VALID_REGISTRATION = """
+            {"userName":"anhad","email":"anhad@example.com","password":"secret123"}""";
+
+    @Test
+    void registerWithoutCsrfTokenIsRejectedWith403Problem() throws Exception {
+        mockMvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON).content(VALID_REGISTRATION))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.startsWith("Missing or invalid CSRF token")));
+        verifyNoInteractions(authService);
+    }
+
     @Test
     void registerReturns201WithTheUser() throws Exception {
         when(authService.registerUser(any())).thenReturn(new UserResponseDto("anhad", "USER"));
 
-        mockMvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"userName":"anhad","email":"anhad@example.com","password":"secret123"}"""))
+        mockMvc.perform(post("/auth/register").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_REGISTRATION))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.userName").value("anhad"))
                 .andExpect(jsonPath("$.password").doesNotExist());
@@ -51,7 +70,7 @@ class AuthControllerTests {
 
     @Test
     void registerWithInvalidFieldsReturns400ProblemWithEveryFieldError() throws Exception {
-        mockMvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON)
+        mockMvc.perform(post("/auth/register").with(csrf()).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"userName":"a!","email":"not-an-email"}"""))
                 .andExpect(status().isBadRequest())
@@ -68,7 +87,7 @@ class AuthControllerTests {
     void registerRejectsPasswordLongerThan72Bytes() throws Exception {
         String emojiPassword = "💪".repeat(20); // 40 Java chars, but 80 UTF-8 bytes
 
-        mockMvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON)
+        mockMvc.perform(post("/auth/register").with(csrf()).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"userName":"anhad","email":"anhad@example.com","password":"%s"}""".formatted(emojiPassword)))
                 .andExpect(status().isBadRequest())
@@ -77,7 +96,7 @@ class AuthControllerTests {
 
     @Test
     void registerWithMalformedJsonReturns400() throws Exception {
-        mockMvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON).content("{\"userName\":"))
+        mockMvc.perform(post("/auth/register").with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{\"userName\":"))
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
     }
@@ -86,9 +105,8 @@ class AuthControllerTests {
     void registerConflictReturns409Problem() throws Exception {
         when(authService.registerUser(any())).thenThrow(new ConflictException("An account with this email already exists"));
 
-        mockMvc.perform(post("/auth/register").contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"userName":"anhad","email":"anhad@example.com","password":"secret123"}"""))
+        mockMvc.perform(post("/auth/register").with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content(VALID_REGISTRATION))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.status").value(409))
                 .andExpect(jsonPath("$.detail").value("An account with this email already exists"))
@@ -96,15 +114,18 @@ class AuthControllerTests {
     }
 
     @Test
-    void loginSetsHttpOnlyAccessTokenCookie() throws Exception {
+    void loginSetsSecureHttpOnlyAccessTokenCookieAndRotatesCsrfToken() throws Exception {
         when(authService.loginUser(any())).thenReturn(new LoginResult("jwt-token", new UserResponseDto("anhad", "USER")));
 
-        mockMvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON)
+        mockMvc.perform(post("/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"email":"anhad@example.com","password":"secret123"}"""))
                 .andExpect(status().isOk())
                 .andExpect(cookie().value("accessToken", "jwt-token"))
                 .andExpect(cookie().httpOnly("accessToken", true))
+                .andExpect(cookie().secure("accessToken", true))
+                .andExpect(cookie().maxAge("accessToken", 15 * 60))
+                .andExpect(cookie().exists("XSRF-TOKEN")) // fresh CSRF token after login
                 .andExpect(jsonPath("$.userName").value("anhad"));
     }
 
@@ -112,7 +133,7 @@ class AuthControllerTests {
     void loginWithBadCredentialsReturns401Problem() throws Exception {
         when(authService.loginUser(any())).thenThrow(new UnauthorizedException("Invalid email or password"));
 
-        mockMvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON)
+        mockMvc.perform(post("/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"email":"anhad@example.com","password":"wrong-password"}"""))
                 .andExpect(status().isUnauthorized())
@@ -122,9 +143,18 @@ class AuthControllerTests {
 
     @Test
     void loginWithMissingFieldsReturns400() throws Exception {
-        mockMvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content("{}"))
+        mockMvc.perform(post("/auth/login").with(csrf()).contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors.email[0]").value("Email is required"))
                 .andExpect(jsonPath("$.errors.password[0]").value("Password is required"));
+    }
+
+    @Test
+    void logoutDeletesTheAccessTokenCookie() throws Exception {
+        mockMvc.perform(post("/auth/logout").with(csrf()))
+                .andExpect(status().isNoContent())
+                .andExpect(cookie().value("accessToken", ""))
+                .andExpect(cookie().maxAge("accessToken", 0))
+                .andExpect(cookie().exists("XSRF-TOKEN"));
     }
 }

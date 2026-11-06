@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Locale;
+import java.util.Optional;
 
 @Service
 public class AuthServiceImpl implements AuthService {
@@ -25,12 +26,20 @@ public class AuthServiceImpl implements AuthService {
     private final Mapper<UserEntity, UserResponseDto> userMapper;
     private final JwtService jwtService;
 
+    /**
+     * A real BCrypt hash of a throwaway value, computed once at startup. Login
+     * checks an unknown email's password against it, so "no such email" costs
+     * the same BCrypt work as "wrong password".
+     */
+    private final String dummyPasswordHash;
+
     AuthServiceImpl(UserRepo userRepo, PasswordEncoder passwordEncoder,
                     Mapper<UserEntity, UserResponseDto> userMapper, JwtService jwtService) {
         this.userRepo = userRepo;
         this.passwordEncoder = passwordEncoder;
         this.userMapper = userMapper;
         this.jwtService = jwtService;
+        this.dummyPasswordHash = passwordEncoder.encode("timing-equalisation-dummy-password");
     }
 
     @Override
@@ -72,11 +81,19 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional
     public LoginResult loginUser(LoginRequest loginRequest) {
-        // Same error for "no such email" and "wrong password", so the
-        // response does not reveal which emails are registered.
-        UserEntity user = userRepo.findByEmailIgnoreCase(normalizeEmail(loginRequest.getEmail()))
-                .filter(u -> passwordEncoder.matches(loginRequest.getPassword(), u.getPassword()))
-                .orElseThrow(() -> new UnauthorizedException("Invalid email or password"));
+        Optional<UserEntity> found = userRepo.findByEmailIgnoreCase(normalizeEmail(loginRequest.getEmail()));
+
+        // Always run BCrypt (~100 ms, deliberately slow), even for an unknown
+        // email. Otherwise unknown emails would answer measurably faster, and
+        // an attacker could use the response time to discover which emails
+        // are registered. The error message is identical for the same reason.
+        String hashToCheck = found.map(UserEntity::getPassword).orElse(dummyPasswordHash);
+        boolean passwordMatches = passwordEncoder.matches(loginRequest.getPassword(), hashToCheck);
+
+        if (found.isEmpty() || !passwordMatches) {
+            throw new UnauthorizedException("Invalid email or password");
+        }
+        UserEntity user = found.get();
 
         // No explicit UPDATE needed: inside @Transactional the entity is
         // "managed", and Hibernate's dirty checking writes the change on commit.

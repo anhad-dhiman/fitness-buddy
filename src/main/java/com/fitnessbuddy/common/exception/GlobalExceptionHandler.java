@@ -10,6 +10,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.web.csrf.CsrfException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -36,14 +37,36 @@ import java.util.stream.Collectors;
  * unsupported media type (415), wrong HTTP method (405), unknown path (404),
  * {@code ResponseStatusException}, and so on.
  *
- * Note: exceptions thrown inside the security filter chain (before a
- * controller is reached) do not pass through here. Those are configured in
- * SecurityConfig.
+ * Security errors (401/403) are raised in filters, before any controller, and
+ * would normally bypass this class. SecurityConfig forwards them here, so they
+ * get the same format.
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * Not authenticated: no token, or an invalid/expired one. Forwarded by
+     * SecurityConfig's authenticationEntryPoint.
+     */
+    @ExceptionHandler(AuthenticationException.class)
+    public ProblemDetail handleAuthentication(AuthenticationException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED,
+                "Authentication is required to access this resource");
+    }
+
+    /**
+     * Authenticated but not allowed, or a missing/wrong CSRF token. Forwarded by
+     * SecurityConfig's accessDeniedHandler (CSRF failures are AccessDeniedExceptions).
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ProblemDetail handleAccessDenied(AccessDeniedException ex) {
+        String detail = ex instanceof CsrfException
+                ? "Missing or invalid CSRF token. Send the XSRF-TOKEN cookie value in the X-XSRF-TOKEN header"
+                : "You do not have permission to perform this action";
+        return ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, detail);
+    }
 
     /** Expected business failures thrown by services. */
     @ExceptionHandler(ApiException.class)
@@ -83,16 +106,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Last resort: a bug. Log the full stack trace for us, return a generic
-     * 500 to the client. Never send internals (SQL, stack traces) to the client.
+     * Last resort: a bug. Log the full stack trace for us, return a generic 500
+     * to the client. Never send internals (SQL, stack traces) to the client.
+     *
+     * Spring always picks the most specific matching handler, so the handlers
+     * above (e.g. AccessDeniedException) win over this one for their types.
      */
     @ExceptionHandler(Exception.class)
-    public ProblemDetail handleUnexpected(Exception ex) throws Exception {
-        // Let Spring Security handle its own exceptions (403/401) if they are
-        // thrown from inside a controller, instead of reporting them as 500.
-        if (ex instanceof AccessDeniedException || ex instanceof AuthenticationException) {
-            throw ex;
-        }
+    public ProblemDetail handleUnexpected(Exception ex) {
         log.error("Unhandled exception", ex);
         return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR,
                 "An unexpected error occurred");

@@ -2,6 +2,13 @@ spring:
   application:
     name: fitness-buddy
 
+  # Optionally load KEY=value lines from a .env file in the working directory
+  # (the project root when run from IntelliJ or ./mvnw). .env is gitignored;
+  # copy .env.example to .env and fill it in. Real environment variables
+  # override it, which is how deployed environments provide secrets.
+  config:
+    import: optional:file:.env[.properties]
+
   jpa:
     hibernate:
       # Flyway owns the schema now. `validate` makes Hibernate check at startup
@@ -18,6 +25,17 @@ spring:
     baseline-version: 1
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/fitness_buddy
-    username: postgres
-    password: 1234
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/fitness_buddy}
+    username: ${DB_USERNAME:postgres}
+    # No default: secrets must come from the environment (or .env), never from git.
+    password: ${DB_PASSWORD}
+
+app:
+  security:
+    # No default on purpose: the app must not start with a guessable key.
+    jwt-secret: ${JWT_SECRET}
+    access-token-ttl: 15m
+    # Secure by default; .env.example turns it off for plain-http localhost.
+    cookie-secure: ${COOKIE_SECURE:true}
+    # Comma-separated. 5173 is Vite's (React) dev-server port.
+    cors-allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}

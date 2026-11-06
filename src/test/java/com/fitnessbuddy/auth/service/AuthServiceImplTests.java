@@ -24,6 +24,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -104,6 +105,17 @@ class AuthServiceImplTests {
         assertThatThrownBy(() -> authService.loginUser(new LoginRequest("secret123", "nobody@example.com")))
                 .isInstanceOf(UnauthorizedException.class)
                 .hasMessage("Invalid email or password");
+    }
+
+    @Test
+    void loginWithUnknownEmailStillRunsThePasswordCheck() {
+        // Timing equalisation: BCrypt must run even when the email doesn't
+        // exist, so response time can't reveal which emails are registered.
+        when(userRepo.findByEmailIgnoreCase("nobody@example.com")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> authService.loginUser(new LoginRequest("secret123", "nobody@example.com")))
+                .isInstanceOf(UnauthorizedException.class);
+        verify(passwordEncoder).matches(eq("secret123"), any());
     }
 
     @Test

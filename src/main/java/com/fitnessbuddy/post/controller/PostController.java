@@ -4,6 +4,7 @@ import com.fitnessbuddy.post.dto.CreatePostDto;
 import com.fitnessbuddy.post.dto.PostFeedResponse;
 import com.fitnessbuddy.post.dto.ResponsePostDto;
 import com.fitnessbuddy.post.service.PostService;
+import com.fitnessbuddy.security.AuthenticatedUser;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -21,13 +22,12 @@ public class PostController {
     }
 
     // @AuthenticationPrincipal injects the principal JwtAuthenticationFilter
-    // stored in the SecurityContext: the user id from the JWT subject.
-    // (It is a String today; Milestone 1.4 makes it a typed principal.)
+    // stored in the SecurityContext: the identity proven by the JWT.
     @PostMapping("/newPost")
-    public ResponseEntity<ResponsePostDto> newPost(@AuthenticationPrincipal String userId,
+    public ResponseEntity<ResponsePostDto> newPost(@AuthenticationPrincipal AuthenticatedUser user,
                                                    @Valid @RequestBody CreatePostDto createPostDto) {
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(postService.newPost(Integer.valueOf(userId), createPostDto));
+                .body(postService.newPost(user.id(), createPostDto));
     }
 
     @GetMapping("/posts")
