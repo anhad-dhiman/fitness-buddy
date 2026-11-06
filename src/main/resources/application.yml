@@ -4,7 +4,18 @@ spring:
 
   jpa:
     hibernate:
-      ddl-auto: update
+      # Flyway owns the schema now. `validate` makes Hibernate check at startup
+      # that every entity field has a matching column, and fail fast if not.
+      # It never changes the database.
+      ddl-auto: validate
+
+  flyway:
+    # Lets Flyway adopt a database that already has tables but no Flyway
+    # history (your local DB created by the old ddl-auto: update). Flyway
+    # records it as version 1 and applies only V2+. On an empty database it
+    # has no effect: V1 runs normally.
+    baseline-on-migrate: true
+    baseline-version: 1
 
   datasource:
     url: jdbc:postgresql://localhost:5432/fitness_buddy
