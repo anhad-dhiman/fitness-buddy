@@ -8,7 +8,7 @@
 		<version>4.1.1</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
-	<groupId>com.fitnessBuddy</groupId>
+	<groupId>com.fitnessbuddy</groupId>
 	<artifactId>fitness-buddy</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name/>
